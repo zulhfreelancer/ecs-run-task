@@ -79,6 +79,14 @@ func main() {
 			Name:  "region, r",
 			Usage: "AWS Region",
 		},
+		&cli.StringFlag{
+			Name:  "profile, p",
+			Usage: "AWS profile name from ~/.aws/credentials file",
+		},
+		&cli.StringFlag{
+			Name:  "focus, fc",
+			Usage: "Focus container - when specified, only logs from this container will be tailed",
+		},
 		&cli.BoolFlag{
 			Name:  "deregister",
 			Usage: "Deregister task definition once done",
@@ -107,10 +115,17 @@ func main() {
 		r.Environment = ctx.StringSlice("env")
 		r.Count = ctx.Int64("count")
 		r.Deregister = ctx.Bool("deregister")
+		r.FocusContainer = ctx.String("focus")
 
 		if r.Region == "" {
 			r.Region = ctx.String("region")
 		}
+		log.Println("AWS region name", r.Region)
+
+		if r.Profile == "" {
+			r.Profile = ctx.String("profile")
+		}
+		log.Println("AWS profile name", r.Profile)
 
 		if ctx.Bool("inherit-env") {
 			for _, env := range os.Environ() {

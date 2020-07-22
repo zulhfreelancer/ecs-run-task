@@ -41,13 +41,16 @@ type Runner struct {
 	Environment        []string
 	Count              int64
 	Deregister         bool
+	Profile            string
+	FocusContainer     string
 }
 
 // New creates a new instance of a runner
 func New() *Runner {
 	return &Runner{
-		Region: os.Getenv("AWS_REGION"),
-		Config: aws.NewConfig(),
+		Region:  os.Getenv("AWS_REGION"),
+		Config:  aws.NewConfig(),
+		Profile: os.Getenv("AWS_DEFAULT_PROFILE"),
 	}
 }
 
@@ -63,7 +66,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		streamPrefix = fmt.Sprintf("run_task_%d", time.Now().Nanosecond())
 	}
 
-	sess := session.Must(session.NewSession(r.Config.WithRegion(r.Region)))
+	var sess *session.Session
+	if r.Profile != "" {
+		log.Println("Create session from an AWS profile", r.Profile)
+		sess = session.Must(session.NewSessionWithOptions(session.Options{
+			Profile: r.Profile,
+			Config:  aws.Config{Region: aws.String(r.Region)},
+		}))
+	} else {
+		sess = session.Must(session.NewSession(r.Config.WithRegion(r.Region)))
+	}
 
 	if err := createLogGroup(sess, r.LogGroupName); err != nil {
 		return err
@@ -82,6 +94,15 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 
 	svc := ecs.New(sess)
+
+	var familyName string
+	familyName = strings.ToLower(*taskDefinitionInput.Family)
+	separator := "taskdefinition"
+	if strings.Contains(familyName, separator) {
+		splitted := strings.Split(familyName, separator)
+		familyName = fmt.Sprintf("%s-ephemeral", splitted[0])
+	}
+	taskDefinitionInput.Family = aws.String(familyName)
 
 	log.Printf("Registering a task for %s", *taskDefinitionInput.Family)
 	resp, err := svc.RegisterTaskDefinition(taskDefinitionInput)
@@ -151,6 +172,12 @@ func (r *Runner) Run(ctx context.Context) error {
 				cmds = append(cmds, aws.String(command))
 			}
 
+			log.Println("Setting container overrides...")
+			for i, cmd := range cmds {
+				log.Printf("Command[%v]: %v", i, *cmd)
+			}
+			log.Printf("Name: %+v\n", override.Service)
+			log.Printf("Environment: %+v\n", env)
 			runTaskInput.Overrides.ContainerOverrides = append(
 				runTaskInput.Overrides.ContainerOverrides,
 				&ecs.ContainerOverride{
@@ -185,6 +212,14 @@ func (r *Runner) Run(ctx context.Context) error {
 	// spawn a log watcher for each container
 	for _, task := range runResp.Tasks {
 		for _, container := range task.Containers {
+			if r.FocusContainer != "" {
+				containerName := *container.Name
+				if containerName != r.FocusContainer {
+					log.Println(containerName, "is not the focus container. Will not watch it.")
+					continue
+				}
+			}
+
 			containerID := path.Base(*container.ContainerArn)
 			watcher := &logWatcher{
 				LogGroupName:   r.LogGroupName,
@@ -219,6 +254,11 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	var taskARNs []*string
 	for _, task := range runResp.Tasks {
+		// always print to stdout regardless `--debug` is set or not
+		taskID := path.Base(*task.TaskArn)
+		fmt.Println("New task has started", taskID)
+		fmt.Printf("View task here: https://%s.console.aws.amazon.com/ecs/home?#/clusters/%s/tasks/%s/details\n", r.Region, r.Cluster, taskID)
+
 		log.Printf("Waiting until task %s has stopped", *task.TaskArn)
 		taskARNs = append(taskARNs, task.TaskArn)
 	}
